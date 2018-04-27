@@ -1,13 +1,9 @@
+#![allow(dead_code, unused_variables)]
 // Rework of https://github.com/ZeusWPI/MOZAIC/blob/00c51314fe226680dad21494c23b002e881c2829/gameserver/src/planetwars/pw_controller.rs
-
-// Can't enable, newer version has incompatible interface.
-// extern crate futures;
 
 use std::any::Any;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-
-// use futures::{Async, Future, Poll};
 
 mod stub {
     pub mod slog {
@@ -50,6 +46,16 @@ mod state {
 use self::state::*;
 use self::stub::*;
 
+/* Runtime dynamic behaviour */
+enum FailedStep {
+    WouldBlock(Box<AsyncMachine>),
+    Finished(Box<Finished>), // TODO
+}
+
+trait AsyncMachine: 'static {
+    fn try_step(self: Box<Self>) -> Result<Box<AsyncMachine>, FailedStep>;
+}
+
 struct PwController<X: marker::State> {
     _state: PhantomData<X>,
     lock: PlayerLock,
@@ -81,20 +87,14 @@ fn start_game(
 }
 
 impl AsyncMachine for PwController<Connecting> {
-    fn try_step(&mut self) -> Result<(), FailedStep> {
-        // Validate conditions for state transitions
-        let condition = true;
-        if condition {
-            // Replace the current machine with a new one.
-            // This is allowed because every state of the machine has the SAME SIZE!
-            take(self, |machine| {
-                machine
-            });
-
-            return Ok(());
-        }
-
-        Err(FailedStep::WouldBlock)
+    fn try_step(self: Box<Self>) -> Result<Box<AsyncMachine>, FailedStep> {
+        // Deref
+        let me = *self;
+        // Consumed state change
+        let next_me: PwController<Playing> = me.into();
+        // Return boxed version again
+        let next_me: Box<AsyncMachine> = Box::new(next_me);
+        return Ok(next_me);
     }
 }
 
@@ -109,6 +109,12 @@ impl PwController<Playing> {
     }
 }
 
+impl AsyncMachine for PwController<Playing> {
+    fn try_step(self: Box<Self>) -> Result<Box<AsyncMachine>, FailedStep> {
+        unimplemented!()
+    }
+}
+
 /* Crashed functionalit */
 
 impl PwController<Finished> {
@@ -118,26 +124,13 @@ impl PwController<Finished> {
 }
 
 impl AsyncMachine for PwController<Finished> {
-    fn try_step(&mut self) -> Result<(), FailedStep> {
-        Err(FailedStep::Finished)
+    fn try_step(self: Box<Self>) -> Result<Box<AsyncMachine>, FailedStep> {
+        unimplemented!()
     }
-}
-
-/* Runtime dynamic behaviour */
-#[derive(Debug)]
-enum FailedStep {
-    WouldBlock,
-    Finished
-    // TODO
-}
-
-trait AsyncMachine: Any + 'static {
-    fn try_step(&mut self) -> Result<(), FailedStep>;
 }
 
 /* Futures integration */
 struct PwControllerFuture {
-    // TODO
     pub controller: Box<(AsyncMachine + 'static)>,
 }
 
@@ -163,12 +156,26 @@ impl future::Future for PwControllerFuture {
 
     fn poll(&mut self) -> future::Poll<(), ()> {
         loop {
-            match self.controller.try_step() {
-                Ok(_) => {},
-                Err(e) => {
-                    println!("{:?}", e);
-                    return future::Poll((), ());
-                }
+            take(&mut self.controller, |state| match state.try_step() {
+                Ok(v) => v,
+                Err(_) => panic!("error"),
+            });
+        }
+    }
+}
+
+mod transition_impl {
+    use super::*;
+
+    impl From<PwController<Connecting>> for PwController<Playing> {
+        fn from(old: PwController<Connecting>) -> Self {
+            PwController {
+                _state: PhantomData,
+                lock: old.lock,
+                game_state: old.game_state,
+                state: old.state,
+                planet_map: old.planet_map,
+                logger: old.logger,
             }
         }
     }
